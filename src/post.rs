@@ -143,8 +143,8 @@ impl Bloom {
                 composite,
                 w: w.max(1),
                 h: h.max(1),
-                threshold: 0.5,
-                intensity: 0.9,
+                threshold: 0.8,
+                intensity: 0.6,
                 iterations: 2,
             }
         }

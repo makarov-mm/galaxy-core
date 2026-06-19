@@ -14,6 +14,7 @@
 //!   Esc            quit
 
 use std::num::NonZeroU32;
+use std::time::Instant;
 
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
 use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext};
@@ -32,6 +33,7 @@ use crate::galaxy::{self, DiskParams};
 use crate::post::Bloom;
 use crate::render::Renderer;
 use crate::sim::Sim;
+use crate::text::TextRenderer;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Scene {
@@ -117,7 +119,12 @@ pub fn run() {
     let size = window.inner_size();
     let mut renderer = Renderer::new(&gl, 1.0 / ref_speed(&sim));
     let mut bloom = Bloom::new(&gl, size.width as i32, size.height as i32);
+    let mut text = TextRenderer::new(&gl);
     let mut cam = OrbitCamera::new(scene_distance(scene), size.width as f32 / size.height.max(1) as f32);
+
+    let mut vp = (size.width as f32, size.height.max(1) as f32);
+    let mut last_frame = Instant::now();
+    let mut fps = 60.0f32;
 
     // --- interaction state -----------------------------------------------
     let mut dragging = false;
@@ -141,6 +148,7 @@ pub fn run() {
                             gl_surface.resize(&gl_context, w, h);
                             bloom.resize(&gl, s.width as i32, s.height as i32);
                             cam.set_aspect(s.width as f32 / s.height as f32);
+                            vp = (s.width as f32, s.height as f32);
                         }
                     }
 
@@ -205,6 +213,11 @@ pub fn run() {
                     }
 
                     WindowEvent::RedrawRequested => {
+                        let now = Instant::now();
+                        let dt = now.duration_since(last_frame).as_secs_f32().max(1e-4);
+                        last_frame = now;
+                        fps = fps * 0.92 + (1.0 / dt) * 0.08;
+
                         if !paused {
                             for _ in 0..substeps {
                                 sim.step();
@@ -220,10 +233,32 @@ pub fn run() {
                             interleaved[b + 3] = sim.vel[i].length();
                         }
 
-                        let vp = cam.view_proj();
+                        let view_proj = cam.view_proj();
                         bloom.begin_scene(&gl);
-                        renderer.draw(&gl, &vp, &interleaved, sim.len());
+                        renderer.draw(&gl, &view_proj, &interleaved, sim.len());
                         bloom.composite(&gl, bloom_on);
+
+                        // --- HUD ---------------------------------------------
+                        let scene_name = if scene == Scene::Disk { "single disk" } else { "merger" };
+                        let pause_tag = if paused { "  [PAUSED]" } else { "" };
+                        let stats = format!(
+                            "FPS    {:>4.0}\nstars  {}\nscene  {}\nspeed  x{}{}\nbloom  {}   intensity {:.1}   bright {:.2}",
+                            fps,
+                            sim.len(),
+                            scene_name,
+                            substeps,
+                            pause_tag,
+                            if bloom_on { "on " } else { "off" },
+                            bloom.intensity,
+                            renderer.brightness,
+                        );
+                        text.draw(&gl, vp.0, vp.1, 12.0, 14.0, 1.0, [0.75, 0.85, 1.0, 0.95], &stats);
+
+                        let controls = "drag orbit    wheel zoom    space pause    up/down speed\nB bloom    [ ] intensity    - = brightness    M merger    R reset    Esc quit";
+                        let lh = TextRenderer::line_height(1.0);
+                        let cy = vp.1 - 2.0 * lh - 12.0;
+                        text.draw(&gl, vp.0, vp.1, 12.0, cy, 1.0, [0.55, 0.6, 0.7, 0.9], controls);
+
                         gl_surface.swap_buffers(&gl_context).expect("swap");
                     }
 

@@ -8,6 +8,10 @@ pub mod sim;
 #[cfg(feature = "render")]
 pub mod app;
 #[cfg(feature = "render")]
+pub mod font;
+#[cfg(feature = "render")]
 pub mod post;
 #[cfg(feature = "render")]
 pub mod render;
+#[cfg(feature = "render")]
+pub mod text;

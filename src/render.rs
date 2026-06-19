@@ -100,9 +100,9 @@ impl Renderer {
                 u_speed_scale,
                 u_brightness,
                 capacity_floats: 0,
-                point_scale: 900.0,
+                point_scale: 450.0,
                 speed_scale,
-                brightness: 0.65,
+                brightness: 0.35,
             }
         }
     }
