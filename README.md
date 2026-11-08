@@ -24,97 +24,109 @@ draws the arms — they emerge.
 
 ## Highlights
 
-- **Barnes-Hut octree** — arena-allocated nodes, centre of mass accumulated
-  incrementally during insertion, depth cap against degenerate clustering.
-- **Symplectic leapfrog** integrator (kick-drift-kick) — energy is conserved to
-  ~0.003% over hundreds of steps instead of drifting away.
-- **Dependency-free parallelism** — force evaluation is fanned across cores with
-  `std::thread::scope`, no `rayon`.
-- **Raw OpenGL renderer** (`glow`) — stars are soft additive point sprites,
-  coloured by speed; an HDR bloom post-process gives the glow.
+- **Morton-ordered Barnes-Hut octree** — bodies are re-sorted along a Z-order
+  curve every step, so each node owns a contiguous range of bodies. The tree is
+  built top-down into a flat pre-order array with skip links: no pointers, no
+  recursion in the force walk, leaves of up to 16 bodies, and spatial neighbours
+  next to each other in memory.
+- **Group walk** — one tree traversal per leaf builds an interaction list shared
+  by all bodies of that leaf; the list is summed in a branch-free loop the
+  compiler turns into SIMD.
+- **Safe opening criterion** — a cell is approximated only if the whole group is
+  farther than `size / θ + |com − cell centre|` (Barnes 1994), so a body is never
+  approximated by a cell that contains it.
+- **Symplectic leapfrog** integrator (kick-drift-kick) — energy stays bounded
+  instead of drifting away.
+- **Dependency-free parallelism** — force evaluation is spread across cores with
+  `std::thread::scope` and a work queue (dense regions cost more; idle threads
+  take the next batch). No `rayon`.
+- **Simulation on its own thread** — rendering and the camera stay smooth even
+  when a step takes longer than a frame; the renderer always draws the newest
+  snapshot.
+- **Raw OpenGL renderer** (`glow`, GL 3.3 core) — stars are soft additive point
+  sprites coloured by speed; an HDR bloom post-process gives the glow.
 - **Hand-rolled math** — `Vec3` and a column-major `Mat4` (perspective, look-at).
 
 ## Build & run
 
-Renderer (pulls `winit` / `glutin` / `glow` via the `render` feature):
-
 ```bash
-cargo run --release --features render
+cargo run --release
 ```
 
-Headless core verification (no GPU needed):
-
-```bash
-cargo run --release --bin verify
-```
-
-Requires a recent stable Rust toolchain (winit 0.29 / glutin 0.31), edition 2021.
+Requires Rust 1.85+ (edition 2024) and an OpenGL 3.3 capable GPU / driver.
+Dependencies: `winit` 0.30, `glutin` 0.32, `glutin-winit` 0.5, `glow` 0.18.
 
 ## Controls
 
-| Input        | Action                          |
-|--------------|---------------------------------|
-| left-drag    | orbit the camera                |
-| mouse wheel  | zoom                            |
-| `Space`      | pause / resume                  |
-| `↑` / `↓`    | simulation speed (substeps/frame) |
-| `B`          | toggle bloom                    |
-| `M`          | switch single galaxy / merger   |
-| `R`          | reset the current scene         |
-| `Esc`        | quit                            |
+| Input        | Action                              |
+|--------------|-------------------------------------|
+| left-drag    | orbit the camera                    |
+| mouse wheel  | zoom                                |
+| `Space`      | pause / resume                      |
+| `↑` / `↓`    | simulation speed (steps per frame)  |
+| `B`          | toggle bloom                        |
+| `[` / `]`    | bloom intensity                     |
+| `-` / `=`    | star brightness                     |
+| `M`          | switch single galaxy / merger       |
+| `R`          | reset the current scene             |
+| `Esc`        | quit                                |
 
-## Verification
+## Accuracy and performance
 
-The `verify` binary checks the core against ground truth.
-
-**Tree accuracy** — Barnes-Hut acceleration vs. direct O(N²) summation, N = 4000.
-Error falls off cleanly with the opening angle θ, exactly as the approximation
-predicts:
+Measured on the default disk (40 001 bodies, softening 0.5) against direct
+*O(N²)* summation:
 
 | θ    | mean rel. error | max rel. error |
 |------|-----------------|----------------|
-| 1.0  | 5.17%           | 127%           |
-| 0.7  | 1.79%           | 22.4%          |
-| 0.5  | 0.63%           | 5.2%           |
-| 0.3  | 0.16%           | 1.5%           |
+| 0.6  | 0.25%           | 1.4%           |
+| 0.8  | 0.41%           | 2.8%           |
+| 1.0  | 0.60%           | 8.7%           |
 
-**Energy conservation** — N = 3000, 400 leapfrog steps, θ = 0.5:
-total energy drift **0.0034%**. A non-symplectic integrator or an incorrect force
-would visibly bleed energy; this does not.
+The app runs at θ = 0.8. Energy drift with the app's settings (dt = 0.0015,
+θ = 0.8, N = 3000, 400 leapfrog steps): **0.03%**.
 
-**Throughput** — *O(N log N)* per step (single-threaded tree build + parallel
-force evaluation); ~10⁵ bodies run interactively on a multicore desktop in a
-release build.
+Step time at θ = 0.8 on a 2-core virtual machine: 10 ms for 20k bodies, 23 ms
+for 40k, 70 ms for 100k. A desktop with more cores divides that accordingly.
 
 ## Layout
 
 ```
-src/math.rs       Vec3 + column-major Mat4 (perspective, look_at)
-src/octree.rs     Barnes-Hut octree (arena, incremental COM, depth cap)
-src/sim.rs        SoA state + leapfrog; brute force & energy for tests
-src/galaxy.rs     rotating-disk initial conditions; two-galaxy merger
-src/parallel.rs   dependency-free scoped parallel-for
-src/camera.rs     orbital camera
-src/render.rs     glow point renderer + star shaders
-src/post.rs       HDR scene target + bloom (bright-pass, separable blur, composite)
-src/app.rs        window, GL context, main loop
-src/bin/verify.rs headless core verification
+src/main.rs            entry point
+src/app.rs             window, GL context, input, frame loop, HUD
+src/camera.rs          orbit camera
+src/math.rs            Vec3 + column-major Mat4 (perspective, look_at)
+src/sim/mod.rs         body state, leapfrog, Morton sorting
+src/sim/octree.rs      Barnes-Hut octree and the group force walk
+src/sim/galaxy.rs      rotating-disk initial conditions, scenes
+src/sim/parallel.rs    dependency-free scoped parallel-for
+src/sim/worker.rs      simulation thread and snapshot hand-off
+src/gfx/stars.rs       star point sprites
+src/gfx/bloom.rs       HDR target + bloom (bright pass, separable blur, composite)
+src/gfx/text.rs        bitmap-font HUD text
+src/gfx/font.rs        embedded font atlas (font_atlas.r8)
+src/gfx/shaders/       GLSL sources
 ```
 
 ## Tuning
 
-In `app.rs`: `DiskParams.n` (star count), `Sim::new(.., dt, theta, eps)`. In the
-renderer: `point_scale`, `brightness`; in post: bloom threshold and intensity.
+- `src/sim/worker.rs`: `SIM_PARAMS` — time step, opening angle θ, softening.
+- `src/sim/galaxy.rs`: star counts and disk parameters of each scene.
+- `src/gfx/stars.rs`: sprite size (`POINT_SCALE`) and default brightness.
+- `src/gfx/bloom.rs`: bloom threshold, intensity and blur iterations.
 
 ## How it works (short version)
 
-1. Build an octree over all stars; each node caches total mass and centre of mass.
-2. For each star, walk the tree: if a node is far enough away (`size / distance < θ`),
-   use its centre of mass as a single point; otherwise descend into its children.
+1. Sort the stars along a Morton curve and build the octree over the sorted
+   order; each node stores its total mass and centre of mass.
+2. For each leaf, walk the tree once: cells far enough from the whole leaf
+   (`size / distance < θ`, with the safety offset) become single point masses;
+   nearer cells are opened down to their stars. Every star in the leaf then sums
+   that list.
 3. Advance positions and velocities with leapfrog, reusing the previous step's
    acceleration for the first half-kick — this is what keeps energy stable.
-4. Upload positions + speeds to the GPU and draw them as additive sprites; blur
-   the bright parts and add them back for bloom.
+4. The simulation thread publishes positions + speeds; the render thread uploads
+   them, draws additive sprites into an HDR target, blurs the bright parts and
+   adds them back for bloom.
 
 ## License
 
